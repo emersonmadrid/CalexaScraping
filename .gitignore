@@ -1,0 +1,22 @@
+# Data
+data/outputs/
+data/temp/
+*.csv
+*.json
+
+# Environment
+.env
+.venv
+venv/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
