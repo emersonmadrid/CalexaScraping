@@ -21,6 +21,20 @@ python -m src.main
 
 El archivo `data/inputs/expedientes.csv` contiene los expedientes a procesar. El resultado de cada intento queda registrado en `logs/` y las capturas temporales se guardan en `data/temp/`.
 
+## CLI de utilidades
+
+Los scripts antiguos fueron reemplazados por un único CLI:
+
+```bash
+python -m src.cli run [--headless|--ui]
+python -m src.cli train-manual -n 80
+python -m src.cli train-assisted -n 100
+python -m src.cli captcha-test -n 10
+python -m src.cli diagnostics
+```
+
+Los archivos en la raíz (`entrenar_*.py`, `diagnostico.py`, etc.) se conservan solo como envoltorios que ejecutan los comandos anteriores para mantener la compatibilidad.
+
 ## Arquitectura
 
 - `src/config/settings.py`: carga de configuración y rutas de trabajo.

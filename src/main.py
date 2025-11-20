@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
+from typing import Optional
 
 from src.config.settings import AppSettings, load_settings
 from src.models.data_models import Expediente, load_expedientes
@@ -25,13 +25,15 @@ def build_captcha_manager(settings: AppSettings) -> CaptchaManager:
 
     solvers = []
 
-    cnn_solver = CaptchaSolverCNN(settings.training_dir / "cnn")
-    if cnn_solver.modelo:
-        solvers.append(cnn_solver)
+    if settings.prefer_cnn:
+        cnn_solver = CaptchaSolverCNN(settings.training_dir / "cnn")
+        if cnn_solver.modelo:
+            solvers.append(cnn_solver)
 
-    ml_solver = CaptchaSolverML(settings.training_dir)
-    if ml_solver.patrones:
-        solvers.append(ml_solver)
+    if settings.prefer_ml:
+        ml_solver = CaptchaSolverML(settings.training_dir)
+        if ml_solver.patrones:
+            solvers.append(ml_solver)
 
     solvers.append(CaptchaSolverOptimizado())
 
@@ -62,14 +64,20 @@ def procesar_expedientes(settings: AppSettings, expedientes: list[Expediente]) -
             exito = form_filler.llenar_formulario(driver, expediente)
 
             if not exito:
-                LOGGER.warning("No se pudo completar la búsqueda para %s", expediente.numero_expediente)
+                LOGGER.warning(
+                    "No se pudo completar la búsqueda para %s", expediente.numero_expediente
+                )
 
             driver.get(settings.base_url)
             time.sleep(2)
 
 
-def main() -> int:
+def run_pipeline(*, headless: Optional[bool] = None) -> int:
+    """High level helper to process the CSV using the automated workflow."""
     settings = load_settings()
+    if headless is not None:
+        settings.headless = headless
+
     configure_logging(log_dir=settings.logs_dir)
 
     try:
@@ -88,6 +96,10 @@ def main() -> int:
         return 1
 
     return 0
+
+
+def main() -> int:
+    return run_pipeline()
 
 
 if __name__ == "__main__":

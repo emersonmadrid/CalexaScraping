@@ -24,7 +24,7 @@ except ImportError:
     print("⚠️ TensorFlow no disponible. Instala con: pip install tensorflow")
 
 class CaptchaSolverCNN:
-    def __init__(self):
+    def __init__(self, training_dir: str | os.PathLike[str] | None = None):
         """
         Solver CNN con arquitectura de deep learning
         """
@@ -39,7 +39,8 @@ class CaptchaSolverCNN:
         self.max_length = 6  # Longitud máxima del CAPTCHA
         
         # Directorio de entrenamiento
-        self.training_dir = "data/training_cnn"
+        self.training_dir = str(training_dir) if training_dir else "data/training_cnn"
+        os.makedirs(self.training_dir, exist_ok=True)
         self.model_path = os.path.join(self.training_dir, "captcha_model.h5")
         self.char_to_num_path = os.path.join(self.training_dir, "char_to_num.pkl")
         
