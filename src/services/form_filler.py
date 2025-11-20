@@ -1,138 +1,124 @@
-# src/services/form_filler.py
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from __future__ import annotations
+
 import time
-from src.config.selectors import *
+from pathlib import Path
+
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
+from src.config import selectors
+from src.models.data_models import Expediente
+from src.services.captcha_manager import CaptchaManager
+from src.utils.helpers import ensure_dir, timestamp
+from src.utils.logger import get_logger
+
+LOGGER = get_logger(__name__)
+
 
 class FormFiller:
-    def __init__(self, captcha_solver):
-        self.captcha_solver = captcha_solver
+    def __init__(self, captcha_manager: CaptchaManager):
+        self.captcha_manager = captcha_manager
 
-    def llenar_formulario(self, driver, datos_expediente, max_reintentos=3):
-        """
-        Llena el formulario completo con validación y reintentos
-        """
-        for intento in range(max_reintentos):
+    def llenar_formulario(
+        self,
+        driver,
+        expediente: Expediente,
+        *,
+        max_reintentos: int = 3,
+    ) -> bool:
+        """Lena el formulario completo con validación."""
+        for intento in range(1, max_reintentos + 1):
             try:
-                print(f"\n📝 Llenando formulario (intento {intento + 1}/{max_reintentos})...")
-                
-                # 1. Esperar que la página esté lista
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.NAME, EXPEDIENTE_INPUT))
-                )
-                
-                # 2. Llenar número de expediente
-                expediente_input = driver.find_element(By.NAME, EXPEDIENTE_INPUT)
-                expediente_input.clear()
-                time.sleep(0.5)
-                expediente_input.send_keys(datos_expediente['numero_expediente'])
-                print(f"✅ Expediente: {datos_expediente['numero_expediente']}")
-                
-                # 3. Esperar que el CAPTCHA esté visible
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "captcha_image"))
-                )
-                time.sleep(1)  # Pequeña espera para que cargue completamente
-                
-                # 4. Resolver CAPTCHA
-                texto_captcha = self.captcha_solver.resolver_captcha(driver)
-                
-                if texto_captcha:
-                    # Ingresar CAPTCHA
-                    captcha_input = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.ID, CAPTCHA_INPUT))
-                    )
-                    captcha_input.clear()
-                    time.sleep(0.5)
-                    captcha_input.send_keys(texto_captcha)
-                    print(f"✅ CAPTCHA ingresado: {texto_captcha}")
-                    
-                    # 4. Hacer clic en buscar
-                    buscar_btn = driver.find_element(By.ID, BUSCAR_BUTTON)
-                    buscar_btn.click()
-                    print("🔍 Búsqueda enviada...")
-                    time.sleep(3)
-                    
-                    # 5. Verificar resultado
-                    return self.verificar_resultado(driver)
-                else:
-                    print(f"❌ No se pudo resolver CAPTCHA en intento {intento + 1}")
-                    if intento < max_reintentos - 1:
-                        print("🔄 Recargando página...")
-                        driver.refresh()
-                        time.sleep(3)
-                    
-            except Exception as e:
-                print(f"❌ Error en intento {intento + 1}: {e}")
-                if intento < max_reintentos - 1:
+                LOGGER.info("Llenando formulario (intento %s/%s)", intento, max_reintentos)
+                self._ingresar_expediente(driver, expediente)
+
+                prediction = self.captcha_manager.solve(driver)
+                if not prediction:
+                    LOGGER.warning("CAPTCHA no resuelto en intento %s", intento)
                     driver.refresh()
-                    time.sleep(3)
-        
-        print("❌ Formulario no pudo ser completado después de todos los intentos")
+                    time.sleep(2)
+                    continue
+
+                captcha_input = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.ID, selectors.CAPTCHA_INPUT))
+                )
+                captcha_input.clear()
+                captcha_input.send_keys(prediction.text)
+                LOGGER.info("CAPTCHA ingresado con solver %s", prediction.solver)
+
+                buscar_btn = driver.find_element(By.ID, selectors.BUSCAR_BUTTON)
+                buscar_btn.click()
+                time.sleep(3)
+
+                if self.verificar_resultado(driver):
+                    return True
+
+                LOGGER.warning("Resultado no concluyente, reintentando")
+                driver.refresh()
+                time.sleep(2)
+            except Exception as exc:
+                LOGGER.error("Error llenando formulario: %s", exc)
+                if intento < max_reintentos:
+                    driver.refresh()
+                    time.sleep(2)
+
+        LOGGER.error("Formulario no pudo completarse después de %s intentos", max_reintentos)
         return False
 
-    def verificar_resultado(self, driver):
-        """
-        Verifica el resultado de la búsqueda
-        """
+    def _ingresar_expediente(self, driver, expediente: Expediente) -> None:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.NAME, selectors.EXPEDIENTE_INPUT))
+        )
+        campo = driver.find_element(By.NAME, selectors.EXPEDIENTE_INPUT)
+        campo.clear()
+        campo.send_keys(expediente.numero_expediente)
+        LOGGER.debug("Ingresado expediente %s", expediente.numero_expediente)
+
+    def verificar_resultado(self, driver) -> bool:
+        """Verifica el resultado de la búsqueda."""
         try:
             time.sleep(2)
-            
-            # Guardar screenshot del resultado
-            import os
-            os.makedirs("data/temp/resultados", exist_ok=True)
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_path = f"data/temp/resultados/resultado_{timestamp}.png"
-            driver.save_screenshot(screenshot_path)
-            print(f"📸 Resultado guardado: {screenshot_path}")
-            
-            # Analizar la página
+            resultados_dir = ensure_dir(Path("data") / "temp" / "resultados")
+            screenshot_path = resultados_dir / f"resultado_{timestamp()}.png"
+            driver.save_screenshot(str(screenshot_path))
+            LOGGER.info("Resultado guardado en %s", screenshot_path)
+
             page_source = driver.page_source.lower()
-            
-            # Verificar diferentes escenarios
+
             if "código de captcha incorrecto" in page_source or "captcha incorrecto" in page_source:
-                print("❌ CAPTCHA incorrecto - La búsqueda no se realizó")
+                LOGGER.warning("CAPTCHA incorrecto reportado por el sitio")
                 return False
-            
-            elif "no se encontraron registros" in page_source or "no se encontraron resultados" in page_source:
-                print("✅ Búsqueda exitosa - No hay resultados para este expediente")
+
+            if (
+                "no se encontraron registros" in page_source
+                or "no se encontraron resultados" in page_source
+            ):
+                LOGGER.info("Búsqueda ejecutada sin resultados")
                 return True
-            
-            elif "expediente" in page_source or "resultado" in page_source:
-                print("🎉 ¡Búsqueda exitosa! - Se encontraron resultados")
+
+            if "expediente" in page_source or "resultado" in page_source:
+                LOGGER.info("¡Búsqueda exitosa!")
                 return True
-            
-            else:
-                print("⚠️ Resultado incierto - Revisa el screenshot")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Error verificando resultado: {e}")
+
+            LOGGER.warning("Resultado incierto, revisar screenshot")
+            return False
+        except Exception as exc:
+            LOGGER.error("Error verificando resultado: %s", exc)
             return False
 
     def extraer_datos(self, driver):
-        """
-        Extrae los datos del expediente de la página de resultados
-        """
+        """Placeholder para extracción de datos de la página de resultados."""
         try:
-            # TODO: Implementar extracción según la estructura de la página de resultados
-            # Por ahora, solo capturamos el HTML
-            page_source = driver.page_source
-            
-            # Buscar tabla de resultados
             from selenium.webdriver.common.by import By
+
+            page_source = driver.page_source
             try:
-                tabla = driver.find_element(By.TAG_NAME, "table")
-                # Extraer datos de la tabla
-                # ... implementar según estructura
-                print("✅ Datos extraídos")
-                return {"html": page_source}
-            except:
-                print("⚠️ No se encontró tabla de resultados")
-                return {"html": page_source}
-                
-        except Exception as e:
-            print(f"❌ Error extrayendo datos: {e}")
+                driver.find_element(By.TAG_NAME, "table")
+                LOGGER.info("Tabla de resultados detectada")
+            except Exception:
+                LOGGER.warning("No se encontró tabla de resultados")
+            return {"html": page_source}
+        except Exception as exc:
+            LOGGER.error("Error extrayendo datos: %s", exc)
             return None
