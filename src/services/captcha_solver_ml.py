@@ -9,9 +9,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-try:  # pragma: no cover - depende de easyocr
+try:
     import easyocr
-except Exception:  # pragma: no cover
+except Exception:
     easyocr = None
 
 from src.config.settings import load_settings
@@ -34,6 +34,10 @@ class CaptchaSolverML(BaseCaptchaSolver):
 
     name = "pattern_matching"
     priority = 40
+    
+    # CONFIGURACIÓN DE LONGITUD DEL CAPTCHA
+    MIN_LENGTH = 4  # ← CAMBIO CRÍTICO: longitud mínima esperada
+    MAX_LENGTH = 6  # ← longitud máxima esperada
 
     def __init__(self, training_dir: Path | None = None) -> None:
         settings = load_settings()
@@ -102,7 +106,7 @@ class CaptchaSolverML(BaseCaptchaSolver):
 
     def buscar_en_patrones(
         self, imagen_pil, umbral: int = 65
-    ) -> str | None:  # pragma: no cover - acceso a pickle
+    ) -> str | None:
         if not self.patrones:
             return None
 
@@ -119,12 +123,14 @@ class CaptchaSolverML(BaseCaptchaSolver):
 
         coincidencias.sort(key=lambda c: c.distancia)
         mejor = coincidencias[0]
-        LOGGER.debug("Patrón conocido encontrado (%s)", mejor.distancia)
+        LOGGER.debug("Patrón conocido encontrado (distancia: %s, texto: %s)", 
+                     mejor.distancia, mejor.texto)
         return mejor.texto
 
     # --- OCR fallback -----------------------------------------------
     def _ocr_fallback(self, imagen_pil):
         if not self.usar_easyocr or not self.reader:
+            LOGGER.debug("EasyOCR no disponible para fallback")
             return None
         try:
             procesada = self._preprocesar_imagen(imagen_pil)
@@ -137,8 +143,17 @@ class CaptchaSolverML(BaseCaptchaSolver):
             )
             texto = "".join(resultados).strip() if resultados else ""
             texto = "".join(c for c in texto if c.isalnum()).upper()
-            return texto if 3 <= len(texto) <= 8 else None
-        except Exception as exc:  # pragma: no cover
+            
+            # VALIDACIÓN DE LONGITUD
+            if self.MIN_LENGTH <= len(texto) <= self.MAX_LENGTH:
+                LOGGER.debug("OCR fallback: '%s' (longitud: %s)", texto, len(texto))
+                return texto
+            else:
+                LOGGER.debug("OCR fallback rechazado: '%s' (longitud: %s, esperada: %s-%s)", 
+                           texto, len(texto), self.MIN_LENGTH, self.MAX_LENGTH)
+                return None
+                
+        except Exception as exc:
             LOGGER.debug("EasyOCR fallback falló: %s", exc)
             return None
 
@@ -149,14 +164,20 @@ class CaptchaSolverML(BaseCaptchaSolver):
         else:
             gray = img
 
-        scale = 5
+        # Escalar más agresivamente para mejor OCR
+        scale = 6  # ← Aumentado de 5 a 6 para mejor resolución
         width = int(gray.shape[1] * scale)
         height = int(gray.shape[0] * scale)
         large = cv2.resize(gray, (width, height), interpolation=cv2.INTER_CUBIC)
 
-        denoised = cv2.fastNlMeansDenoising(large, None, 15, 7, 21)
+        # Denoising más fuerte
+        denoised = cv2.fastNlMeansDenoising(large, None, 20, 7, 21)
+        
+        # Mejora de contraste
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(denoised)
+        
+        # Binarización adaptativa
         binary = cv2.adaptiveThreshold(
             enhanced,
             255,
@@ -165,14 +186,19 @@ class CaptchaSolverML(BaseCaptchaSolver):
             15,
             2,
         )
-        return binary
+        
+        # Operaciones morfológicas para limpiar ruido
+        kernel = np.ones((2, 2), np.uint8)
+        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        
+        return cleaned
 
     def _crear_easyocr(self):
         if easyocr is None:
             return None
         try:
             return easyocr.Reader(["en"], gpu=False, verbose=False)
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             LOGGER.warning("EasyOCR no disponible: %s", exc)
             return None
 

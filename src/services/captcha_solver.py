@@ -4,15 +4,24 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import Sequence
 
 import cv2
 import numpy as np
-import pytesseract
 
-try:  # pragma: no cover - optional dependency
+# Importaciones opcionales
+try:
+    import pytesseract
+    PYTESSERACT_AVAILABLE = True
+except ImportError:
+    PYTESSERACT_AVAILABLE = False
+    pytesseract = None
+
+try:
     import easyocr
-except Exception:  # pragma: no cover
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    EASYOCR_AVAILABLE = False
     easyocr = None
 
 from src.models.data_models import CaptchaPrediction, CapturedCaptcha
@@ -36,22 +45,34 @@ class CaptchaSolverOptimizado(BaseCaptchaSolver):
     priority = 50
 
     def __init__(self) -> None:
-        self.usar_tesseract = self._tesseract_disponible()
-        self.reader = self._crear_easyocr()
+        self.usar_tesseract = PYTESSERACT_AVAILABLE and self._tesseract_disponible()
+        self.reader = self._crear_easyocr() if EASYOCR_AVAILABLE else None
         self.usar_easyocr = self.reader is not None
+        
+        if not self.usar_tesseract and not self.usar_easyocr:
+            LOGGER.warning(
+                "OCR ensemble sin engines disponibles. "
+                "Instala: pip install pytesseract easyocr"
+            )
 
     def predict(self, capture: CapturedCaptcha) -> CaptchaPrediction | None:
+        if not self.usar_tesseract and not self.usar_easyocr:
+            LOGGER.debug("OCR ensemble: sin engines OCR disponibles")
+            return None
+            
         variantes = self.preprocesar_imagen(capture.image)
         hallazgos: list[OCRResult] = []
 
         for nombre, imagen_cv in variantes:
-            texto_tess = self._ocr_tesseract(imagen_cv)
-            if texto_tess:
-                hallazgos.append(OCRResult(texto_tess, "tesseract", nombre))
+            if self.usar_tesseract:
+                texto_tess = self._ocr_tesseract(imagen_cv)
+                if texto_tess:
+                    hallazgos.append(OCRResult(texto_tess, "tesseract", nombre))
 
-            texto_easy = self._ocr_easyocr(imagen_cv)
-            if texto_easy:
-                hallazgos.append(OCRResult(texto_easy, "easyocr", nombre))
+            if self.usar_easyocr:
+                texto_easy = self._ocr_easyocr(imagen_cv)
+                if texto_easy:
+                    hallazgos.append(OCRResult(texto_easy, "easyocr", nombre))
 
         if not hallazgos:
             return None
@@ -125,12 +146,14 @@ class CaptchaSolverOptimizado(BaseCaptchaSolver):
         if not texto:
             return None
         texto = "".join(c for c in texto if c.isalnum()).upper()
-        if not (3 <= len(texto) <= 8):
+        # CAMBIO: longitud esperada de 4-6 caracteres
+        if not (4 <= len(texto) <= 6):
+            LOGGER.debug("Texto rechazado por longitud: '%s' (len=%s)", texto, len(texto))
             return None
         return texto
 
     def _ocr_tesseract(self, matriz) -> str | None:
-        if not self.usar_tesseract:
+        if not self.usar_tesseract or not PYTESSERACT_AVAILABLE:
             return None
         try:
             config = (
@@ -139,12 +162,12 @@ class CaptchaSolverOptimizado(BaseCaptchaSolver):
             )
             texto = pytesseract.image_to_string(matriz, config=config)
             return self._limpiar(texto.strip())
-        except Exception as exc:  # pragma: no cover - dependencia externa
+        except Exception as exc:
             LOGGER.debug("Tesseract falló: %s", exc)
             return None
 
     def _ocr_easyocr(self, matriz) -> str | None:
-        if not self.usar_easyocr or not self.reader:
+        if not self.usar_easyocr or not self.reader or not EASYOCR_AVAILABLE:
             return None
         try:
             resultados = self.reader.readtext(
@@ -158,7 +181,7 @@ class CaptchaSolverOptimizado(BaseCaptchaSolver):
             )
             texto = "".join(resultados).strip() if resultados else None
             return self._limpiar(texto)
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             LOGGER.debug("EasyOCR falló: %s", exc)
             return None
 
@@ -206,20 +229,23 @@ class CaptchaSolverOptimizado(BaseCaptchaSolver):
 
     # --- inicialización ---------------------------------------------
     def _tesseract_disponible(self) -> bool:
+        if not PYTESSERACT_AVAILABLE:
+            LOGGER.warning("Pytesseract no instalado")
+            return False
         try:
             pytesseract.get_tesseract_version()
             return True
         except Exception:
-            LOGGER.warning("Tesseract no disponible")
+            LOGGER.warning("Tesseract no disponible (binario no encontrado)")
             return False
 
     def _crear_easyocr(self):
-        if easyocr is None:
-            LOGGER.warning("EasyOCR no disponible")
+        if not EASYOCR_AVAILABLE:
+            LOGGER.warning("EasyOCR no instalado")
             return None
         try:
             return easyocr.Reader(["en"], gpu=False, verbose=False)
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             LOGGER.warning("EasyOCR no se pudo inicializar: %s", exc)
             return None
 
